@@ -1,0 +1,32 @@
+{
+  "name": "veille-auto-multi-agent",
+  "version": "1.0.0",
+  "description": "Pipeline de veille technologique automatisée propulsé par trois agents Claude (Opus, Sonnet, Haiku)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "veille": "node veille-auto.mjs",
+    "veille:dry": "node veille-auto.mjs --dry-run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.69.0"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "anthropic",
+    "claude",
+    "veille",
+    "automation",
+    "blog",
+    "tech-news"
+  ],
+  "author": "François Menguy",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fmenguy/veille-auto-multi-agent.git"
+  }
+}

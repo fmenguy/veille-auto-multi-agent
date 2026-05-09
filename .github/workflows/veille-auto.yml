@@ -1,0 +1,60 @@
+name: Veille tech automatisée
+
+on:
+  schedule:
+    # Tous les vendredis à 7h00 UTC. Modifie cette ligne pour ajuster la fréquence.
+    - cron: '0 7 * * 5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (n'écrit rien, log seulement)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  generate-veille:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+
+      - name: Run veille-auto
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            npm run veille:dry
+          else
+            npm run veille
+          fi
+
+      - name: Commit and push
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          git config user.name "veille-bot"
+          git config user.email "veille-bot@users.noreply.github.com"
+          DATE=$(date +%Y-%m-%d)
+
+          if [ ! -f "output/veille-${DATE}.md" ]; then
+            echo "Pas de fichier de sortie pour ${DATE}, rien à commit."
+            exit 0
+          fi
+
+          git add output/veille-${DATE}.md
+          git commit -m "Veille auto ${DATE} (généré par agents IA)"
+          git push origin ${GITHUB_REF_NAME}

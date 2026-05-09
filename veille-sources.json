@@ -1,0 +1,41 @@
+{
+  "description": "Liste des sources scrapées par veille-auto.mjs. Modifier librement.",
+  "sources": [
+    {
+      "name": "NVIDIA Blog",
+      "url": "https://blogs.nvidia.com/",
+      "weight": "high",
+      "topics": ["GPU", "IA", "infrastructure"]
+    },
+    {
+      "name": "Anthropic News",
+      "url": "https://www.anthropic.com/news",
+      "weight": "high",
+      "topics": ["IA", "agents", "Claude"]
+    },
+    {
+      "name": "OpenAI News",
+      "url": "https://openai.com/news/",
+      "weight": "high",
+      "topics": ["IA", "GPT", "agents"],
+      "note": "Renvoie parfois 403 selon User-Agent, le script ne bloque pas si une source échoue"
+    },
+    {
+      "name": "Hugging Face Papers",
+      "url": "https://huggingface.co/papers",
+      "weight": "medium",
+      "topics": ["recherche", "LLM", "papers"]
+    },
+    {
+      "name": "Hugging Face Models Trending",
+      "url": "https://huggingface.co/models?sort=trending",
+      "weight": "medium",
+      "topics": ["modèles", "open-source"]
+    }
+  ],
+  "search_queries_examples": [
+    "AI announcement [month] [year]",
+    "open source LLM release [month] [year]",
+    "GPU AI hardware [month] [year]"
+  ]
+}
