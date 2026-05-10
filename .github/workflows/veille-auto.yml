@@ -57,4 +57,17 @@ jobs:
 
           git add output/veille-${DATE}.md
           git commit -m "Veille auto ${DATE} (généré par agents IA)"
-          git push origin ${GITHUB_REF_NAME}
+
+          # Push avec retry + rebase si la branche distante a divergé
+          for i in 1 2 3; do
+            if git push origin ${GITHUB_REF_NAME}; then
+              echo "Push OK"
+              exit 0
+            fi
+            echo "Push rejeté, pull --rebase puis retry ($i/3)"
+            git fetch origin ${GITHUB_REF_NAME}
+            git rebase origin/${GITHUB_REF_NAME} || { echo "Conflit de rebase, abandon"; git rebase --abort; exit 1; }
+          done
+
+          echo "3 tentatives échouées, abandon"
+          exit 1
