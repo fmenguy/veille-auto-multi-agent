@@ -10,33 +10,37 @@ Inspiré et extrait d'une expérience publique : observer pendant six mois ce qu
 [Cron GitHub Actions]
         │
         ▼
-[Scrape sources web]   ◀── liste configurable (NVIDIA, Anthropic, OpenAI, HF, etc.)
+[Scrape sources web]    ◀── liste configurable (NVIDIA, Anthropic, OpenAI, HF, etc.)
         │
         ▼
-[Planificateur : Opus]   ◀── tri éditorial, choix des 4-6 sujets pertinents
+[Scout : Sonnet]        ◀── web_search pour découvrir 3-5 sources NON listées
+        │                   (blogs indépendants, papers, repos GitHub trendy)
+        ▼
+[Planificateur : Opus]  ◀── tri éditorial, choix des 4-6 sujets pertinents
         │
         ▼
-[Rédacteur : Sonnet]     ◀── écriture de l'article (Markdown ou HTML)
-        │
+[Rédacteur : Sonnet]    ◀── écriture de l'article (Markdown ou HTML)
+        │                   AVEC composants visuels (tableaux, schémas, blockquotes)
         ▼
-[Optimiseur : Haiku]     ◀── titre, méta-description, highlights, tags SEO
+[Optimiseur : Haiku]    ◀── titre, méta-description, highlights, tags SEO
         │
         ▼
 [Sortie : output/veille-YYYY-MM-DD.md]
 ```
 
-## Pourquoi trois modèles plutôt qu'un seul
+## Pourquoi quatre modèles plutôt qu'un seul
 
-Comme dans une rédaction humaine : un rédacteur en chef, un journaliste, un secrétaire de rédaction. Chaque rôle demande des compétences différentes. Spécialiser permet à la fois d'avoir une meilleure qualité et de réduire les coûts (on n'utilise pas le modèle le plus cher pour une tâche que le moins cher gère bien).
+Comme dans une rédaction humaine : un reporter de terrain, un rédacteur en chef, un journaliste, un secrétaire de rédaction. Chaque rôle demande des compétences différentes. Spécialiser permet à la fois d'avoir une meilleure qualité et de réduire les coûts (on n'utilise pas le modèle le plus cher pour une tâche que le moins cher gère bien).
 
-Modèles utilisés (par défaut, configurables) :
+Modèles utilisés (par défaut, configurables via env vars) :
+- `claude-sonnet-4-6` pour le scout (web_search pour sources externes)
 - `claude-opus-4-6` pour le tri éditorial (planificateur)
 - `claude-sonnet-4-6` pour la rédaction (writer)
 - `claude-haiku-4-5` pour les métadonnées (optimizer)
 
 ## Coût estimé
 
-Environ **0,18 $ par article** (5K tokens Opus + 7K Sonnet + 6K Haiku, output compris). À raison d'un article par semaine, ça revient à **moins de 10 € par an**.
+Environ **0,25 $ par article** (Scout avec ~5 web_search à $0.01 + ~3K tokens, puis 5K Opus + 7K Sonnet + 6K Haiku output compris). À raison d'un article par semaine, ça revient à **environ 13 € par an**.
 
 ## Mise en place
 
@@ -103,8 +107,9 @@ Par défaut, le script écrit un fichier Markdown dans `output/veille-YYYY-MM-DD
 
 - **Pas de fact-checking automatique** : les agents écrivent ce qu'ils trouvent dans le texte scrapé. Hallucinations possibles.
 - **Scraping basique** : `fetch` natif + regex pour nettoyer le HTML. Les sites en JavaScript pur (rendu côté client) renverront du vide.
-- **Sources hardcodées** : pas de panel admin, pas de base de données. Volontairement simple.
+- **Sources hardcodées** : la liste de base est dans `veille-sources.json`. Le Scout compense en découvrant des sources non listées à chaque run via web_search.
 - **Pas de relecture humaine** dans le pipeline. Si tu veux ajouter une étape de validation, branche un webhook Slack/Discord avant publication.
+- **Web search Anthropic** : le tool `web_search_20250305` est facturé environ $0.01 par recherche (en plus des tokens). Le Scout est limité à 5 recherches par run pour rester sous contrôle.
 
 ## Structure du repo
 

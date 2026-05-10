@@ -34,6 +34,7 @@ const ARGS = new Set(process.argv.slice(2));
 const DRY_RUN = ARGS.has('--dry-run');
 
 const MODELS = {
+  scout: process.env.VEILLE_MODEL_SCOUT || 'claude-sonnet-4-6',
   planner: process.env.VEILLE_MODEL_PLANNER || 'claude-opus-4-6',
   writer: process.env.VEILLE_MODEL_WRITER || 'claude-sonnet-4-6',
   optimizer: process.env.VEILLE_MODEL_OPTIMIZER || 'claude-haiku-4-5-20251001',
@@ -96,6 +97,43 @@ async function fetchText(url) {
 
 // ---------------------------------------------------------------- LLM calls
 
+async function callScout(scrapedSummary) {
+  const system = `Tu es l'agent "scout" d'une chaîne de veille tech. À partir d'un résumé des sources tech déjà scrapées, tu utilises l'outil web_search pour trouver des news complémentaires des 7 derniers jours qui n'apparaissent PAS dans les sources fournies.
+
+Cherche des angles non couverts par les sources principales : blogs indépendants, papers récents, dépôts GitHub trendy en sécurité ou IA, analyses techniques.
+
+Tu fais 3 à 5 recherches au maximum. Vise du concret : annonces, vulnérabilités CVE, nouveaux modèles open-source, papers majeurs, projets qui décollent.
+
+Réponds avec un texte structuré, une trouvaille par bloc :
+### [Titre court de la news]
+URL : [lien]
+Date : [si connue]
+Résumé : 3-5 lignes factuelles. Pourquoi c'est notable. Catégorie (IA/Sécurité/GPU/Open-source).`;
+
+  const userPrompt = `Voici un extrait des sources principales déjà scrapées aujourd'hui :
+
+${scrapedSummary.slice(0, 6000)}
+
+Trouve 3 à 5 sources COMPLÉMENTAIRES qui apportent une perspective différente ou des sujets non traités.`;
+
+  const msg = await client.messages.create({
+    model: MODELS.scout,
+    max_tokens: 4000,
+    system,
+    tools: [
+      {
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5,
+      },
+    ],
+    messages: [{ role: 'user', content: userPrompt }],
+  });
+
+  const textBlocks = msg.content.filter((b) => b.type === 'text');
+  return textBlocks.map((b) => b.text).join('\n\n').trim();
+}
+
 async function callPlanner(rawSources) {
   const system = `Tu es l'agent "planificateur" d'une chaîne de veille tech. Tu reçois du texte brut scrappé de plusieurs sources web et tu sélectionnes les 4 à 6 sujets les plus intéressants à couvrir dans un article de blog tech francophone.
 
@@ -129,15 +167,43 @@ Tu réponds en JSON strict :
 async function callWriter(plan, dateLabel) {
   const system = `Tu es l'agent "rédacteur" d'une chaîne de veille tech. Tu reçois un plan de sujets et tu rédiges un article en Markdown standard pour un blog tech francophone.
 
-Règles :
+RÈGLES :
 - Style direct, technique, vulgarisé. Pas de hype creuse ("révolutionnaire", "game-changer").
 - Termes français quand un équivalent existe.
 - Format Markdown : H1 pour le titre, H2 par sujet, paragraphes, listes à puces, liens [texte](url) pour chaque source.
-- Chaque sujet : 3-5 paragraphes, lien source en italique en fin de section.
+- Chaque sujet : 2-3 paragraphes courts, lien source en italique en fin de section.
 - Termine par un H2 "Ce qu'il faut retenir" avec 4-5 puces.
 - Pas de mention d'auteur.
 
-Tu réponds avec uniquement le Markdown brut, sans backticks de wrapping, sans préambule.`;
+ENRICHIS L'ARTICLE AVEC DES ÉLÉMENTS VISUELS MARKDOWN (insère-en au moins 2-3 par article) :
+
+1. Tableaux comparatifs (idéal pour A vs B, support de versions, avant/après) :
+| Critère | Option A | Option B |
+|---------|----------|----------|
+| Coût    | X        | Y        |
+
+2. Citations en blockquote pour faits marquants ou chiffres clés :
+> 10x de réduction du coût d'inférence par token (NVIDIA Vera Rubin)
+
+3. Schémas de flux en bloc code (ASCII art simple) :
+\`\`\`
+[Source A] → [Process] → [Sortie]
+\`\`\`
+
+4. Listes "définitions" pour distinguer vocabulaire :
+- **Term A** : explication courte
+- **Term B** : explication courte
+
+5. Section de mise en garde (titre H3 explicite) :
+### ⚠ Avertissement
+Texte du disclaimer.
+
+CONSIGNES ÉDITORIALES :
+- Insère un visuel (tableau, blockquote chiffre, schema ASCII) par sujet majeur. Pas tous, mais au moins sur 2-3 sujets.
+- Pas plus de 2 paragraphes consécutifs sans un visuel ou une liste.
+- Privilégie : tableau pour comparer, blockquote pour un chiffre marquant, ASCII flow pour un process.
+
+Tu réponds avec uniquement le Markdown brut, sans backticks de wrapping global, sans préambule.`;
 
   const userPrompt = `Date : ${dateLabel}
 
@@ -238,9 +304,24 @@ async function run() {
 
   const rawSources = scrapedChunks.join('\n---\n');
 
-  // 2. Planner
+  // 2. Scout (découverte de sources externes via web_search)
+  log(`Scout : ${MODELS.scout} (web_search activé)`);
+  let scoutFindings = '';
+  try {
+    scoutFindings = await callScout(rawSources);
+    const scoutLines = scoutFindings.split('\n').filter((l) => l.startsWith('### ')).length;
+    log(`Scout : ${scoutLines} trouvailles complémentaires`);
+  } catch (err) {
+    log(`! Scout en échec, on continue sans : ${err.message}`);
+  }
+
+  const enrichedSources = scoutFindings
+    ? `${rawSources}\n\n=== SOURCES COMPLÉMENTAIRES (Scout) ===\n${scoutFindings}`
+    : rawSources;
+
+  // 3. Planner
   log(`Pilotage : ${MODELS.planner}`);
-  const plan = await callPlanner(rawSources);
+  const plan = await callPlanner(enrichedSources);
   log(`Plan : ${plan.topics.length} sujets retenus`);
   plan.topics.forEach((t, i) => log(`  ${i + 1}. ${t.title}`));
 
