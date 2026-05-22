@@ -1,9 +1,12 @@
 name: Veille tech automatisée
 
+# Ce repo est un TEMPLATE/exemple : le workflow ne tourne qu'en manuel.
+# Pour une vraie instance en production, dé-commente le bloc schedule
+# ci-dessous ET configure le secret ANTHROPIC_API_KEY dans les
+# repository secrets (Settings > Secrets and variables > Actions).
 on:
-  schedule:
-    # Tous les vendredis à 7h00 UTC. Modifie cette ligne pour ajuster la fréquence.
-    - cron: '0 7 * * 5'
+  # schedule:
+  #   - cron: '0 7 * * 5'   # tous les vendredis à 7h00 UTC
   workflow_dispatch:
     inputs:
       dry_run:

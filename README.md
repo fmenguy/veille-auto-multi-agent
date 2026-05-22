@@ -90,9 +90,17 @@ Pousse ce repo (ou un fork) sur GitHub, puis :
 2. **Settings > Actions > General > Workflow permissions**
    - Coche **Read and write permissions** (pour que le workflow puisse commit/push le résultat)
 
-3. Le workflow `.github/workflows/veille-auto.yml` tourne par défaut tous les vendredis 7h UTC. Modifie la ligne `cron:` pour ajuster.
+3. Le workflow `.github/workflows/veille-auto.yml` est livré en **mode manuel uniquement** (ce repo est un template). Pour l'automatiser, dé-commente le bloc `schedule:` dans le YAML :
 
-4. Tu peux aussi le lancer manuellement depuis l'onglet **Actions > Veille tech automatisée > Run workflow** (option `dry_run` disponible).
+   ```yaml
+   on:
+     schedule:
+       - cron: '0 7 * * 5'   # tous les vendredis à 7h UTC
+     workflow_dispatch:
+       ...
+   ```
+
+4. Tu peux lancer le workflow manuellement à tout moment depuis l'onglet **Actions > Veille tech automatisée > Run workflow** (option `dry_run` disponible).
 
 ## Adapter à ton stack
 
