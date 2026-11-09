@@ -2,14 +2,15 @@
 /**
  * veille-auto.mjs
  *
- * Pipeline de veille tech automatisée avec trois agents Claude.
+ * Pipeline de veille tech automatisée avec quatre agents Claude.
  *
  * Pipeline :
  *   1. Scrape les sources web listées dans veille-sources.json
- *   2. Pilotage par Claude Opus (planificateur)
- *   3. Rédaction par Claude Sonnet (corps de l'article en Markdown)
- *   4. Optimisation/highlights par Claude Haiku
- *   5. Écrit output/veille-YYYY-MM-DD.md avec front-matter YAML
+ *   2. Recherche complémentaire par Claude Sonnet (scout, outil web_search)
+ *   3. Pilotage par Claude Opus (planificateur)
+ *   4. Rédaction par Claude Sonnet (corps de l'article en Markdown)
+ *   5. Optimisation/highlights par Claude Haiku
+ *   6. Écrit output/veille-YYYY-MM-DD.md avec front-matter YAML
  *
  * Usage :
  *   ANTHROPIC_API_KEY=sk-... node veille-auto.mjs
@@ -18,9 +19,10 @@
  * Environnement (toutes les vars sont optionnelles) :
  *   ANTHROPIC_API_KEY        Clé API Anthropic (REQUIS)
  *   VEILLE_OUTPUT_DIR        Dossier de sortie (défaut : ./output)
- *   VEILLE_MODEL_PLANNER     Modèle planificateur (défaut : claude-opus-4-6)
- *   VEILLE_MODEL_WRITER      Modèle rédacteur (défaut : claude-sonnet-4-6)
- *   VEILLE_MODEL_OPTIMIZER   Modèle optimiseur (défaut : claude-haiku-4-5-20251001)
+ *   VEILLE_MODEL_SCOUT       Modèle scout (défaut : claude-sonnet-5-5)
+ *   VEILLE_MODEL_PLANNER     Modèle planificateur (défaut : claude-opus-5-5)
+ *   VEILLE_MODEL_WRITER      Modèle rédacteur (défaut : claude-sonnet-5-5)
+ *   VEILLE_MODEL_OPTIMIZER   Modèle optimiseur (défaut : claude-haiku-5-5)
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -34,11 +36,25 @@ const ARGS = new Set(process.argv.slice(2));
 const DRY_RUN = ARGS.has('--dry-run');
 
 const MODELS = {
-  scout: process.env.VEILLE_MODEL_SCOUT || 'claude-sonnet-4-6',
-  planner: process.env.VEILLE_MODEL_PLANNER || 'claude-opus-4-6',
-  writer: process.env.VEILLE_MODEL_WRITER || 'claude-sonnet-4-6',
-  optimizer: process.env.VEILLE_MODEL_OPTIMIZER || 'claude-haiku-4-5-20251001',
+  scout: process.env.VEILLE_MODEL_SCOUT || 'claude-sonnet-5-5',
+  planner: process.env.VEILLE_MODEL_PLANNER || 'claude-opus-5-5',
+  writer: process.env.VEILLE_MODEL_WRITER || 'claude-sonnet-5-5',
+  optimizer: process.env.VEILLE_MODEL_OPTIMIZER || 'claude-haiku-5-5',
 };
+
+// La réflexion (thinking) des modèles récents consomme des tokens de sortie :
+// ces plafonds lui laissent de la place avant la réponse. 16 000 reste sous la
+// limite au-delà de laquelle le SDK impose le streaming.
+const MAX_TOKENS = {
+  scout: 16000,
+  planner: 16000,
+  writer: 16000,
+  optimizer: 8000,
+};
+
+// Nombre maximal de reprises du Scout quand la boucle de recherche côté serveur
+// s'interrompt (stop_reason "pause_turn").
+const SCOUT_MAX_CONTINUATIONS = 3;
 
 const OUTPUT_DIR = process.env.VEILLE_OUTPUT_DIR || path.join(__dirname, 'output');
 
@@ -97,6 +113,39 @@ async function fetchText(url) {
 
 // ---------------------------------------------------------------- LLM calls
 
+/**
+ * Vérifie la raison d'arrêt puis renvoie le texte de la réponse.
+ * La réponse peut commencer par des blocs `thinking` (et, pour le Scout, des
+ * blocs `server_tool_use` / `web_search_tool_result`) : on concatène donc le
+ * texte de tous les blocs de type "text" au lieu de lire content[0].
+ */
+function extractText(msg, agent, maxTokens) {
+  if (msg.stop_reason === 'refusal') {
+    const details = msg.stop_details;
+    const category = details?.category ? `, catégorie "${details.category}"` : '';
+    const explanation = details?.explanation ? ` : ${details.explanation}` : '';
+    throw new Error(`${agent} : le modèle a refusé la requête (stop_reason "refusal"${category})${explanation}`);
+  }
+  if (msg.stop_reason === 'max_tokens') {
+    throw new Error(
+      `${agent} : réponse tronquée, plafond de ${maxTokens} tokens de sortie atteint (stop_reason "max_tokens"). ` +
+        "Relever la valeur dans MAX_TOKENS ou alléger l'entrée.",
+    );
+  }
+  if (msg.stop_reason === 'model_context_window_exceeded') {
+    throw new Error(`${agent} : fenêtre de contexte du modèle dépassée (stop_reason "model_context_window_exceeded").`);
+  }
+  const text = msg.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+    .trim();
+  if (!text) {
+    throw new Error(`${agent} : aucun bloc de texte dans la réponse (stop_reason "${msg.stop_reason}").`);
+  }
+  return text;
+}
+
 async function callScout(scrapedSummary) {
   const system = `Tu es l'agent "scout" d'une chaîne de veille tech. À partir d'un résumé des sources tech déjà scrapées, tu utilises l'outil web_search pour trouver des news complémentaires des 7 derniers jours qui n'apparaissent PAS dans les sources fournies.
 
@@ -116,22 +165,40 @@ ${scrapedSummary.slice(0, 6000)}
 
 Trouve 3 à 5 sources COMPLÉMENTAIRES qui apportent une perspective différente ou des sujets non traités.`;
 
-  const msg = await client.messages.create({
+  const tools = [
+    {
+      type: 'web_search_20260209',
+      name: 'web_search',
+      max_uses: 5,
+    },
+  ];
+  const messages = [{ role: 'user', content: userPrompt }];
+
+  let msg = await client.messages.create({
     model: MODELS.scout,
-    max_tokens: 4000,
+    max_tokens: MAX_TOKENS.scout,
     system,
-    tools: [
-      {
-        type: 'web_search_20250305',
-        name: 'web_search',
-        max_uses: 5,
-      },
-    ],
-    messages: [{ role: 'user', content: userPrompt }],
+    tools,
+    messages,
   });
 
-  const textBlocks = msg.content.filter((b) => b.type === 'text');
-  return textBlocks.map((b) => b.text).join('\n\n').trim();
+  // La boucle de recherche côté serveur peut s'interrompre ("pause_turn") :
+  // on renvoie la réponse telle quelle et le serveur reprend où il en était.
+  for (let i = 0; msg.stop_reason === 'pause_turn' && i < SCOUT_MAX_CONTINUATIONS; i++) {
+    messages.push({ role: 'assistant', content: msg.content });
+    msg = await client.messages.create({
+      model: MODELS.scout,
+      max_tokens: MAX_TOKENS.scout,
+      system,
+      tools,
+      messages,
+    });
+  }
+  if (msg.stop_reason === 'pause_turn') {
+    throw new Error(`Scout : recherche toujours en pause après ${SCOUT_MAX_CONTINUATIONS} reprises.`);
+  }
+
+  return extractText(msg, 'Scout', MAX_TOKENS.scout);
 }
 
 async function callPlanner(rawSources) {
@@ -151,14 +218,17 @@ Tu réponds en JSON strict :
 
   const msg = await client.messages.create({
     model: MODELS.planner,
-    max_tokens: 4000,
+    max_tokens: MAX_TOKENS.planner,
+    // Opus 5.5 réfléchit en effort "medium" par défaut : le tri éditorial
+    // mérite davantage.
+    output_config: { effort: 'high' },
     system,
     messages: [
       { role: 'user', content: `Sources scrapées ce jour :\n\n${rawSources}` },
     ],
   });
 
-  const text = msg.content[0].text;
+  const text = extractText(msg, 'Planner', MAX_TOKENS.planner);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Planner: pas de JSON valide en sortie');
   return JSON.parse(jsonMatch[0]);
@@ -214,12 +284,12 @@ Rédige l'article Markdown complet. Le H1 doit être : "# Veille tech ${dateLabe
 
   const msg = await client.messages.create({
     model: MODELS.writer,
-    max_tokens: 8000,
+    max_tokens: MAX_TOKENS.writer,
     system,
     messages: [{ role: 'user', content: userPrompt }],
   });
 
-  return msg.content[0].text.trim();
+  return extractText(msg, 'Writer', MAX_TOKENS.writer);
 }
 
 async function callOptimizer(markdownContent, plan) {
@@ -239,12 +309,12 @@ ${JSON.stringify(plan, null, 2)}`;
 
   const msg = await client.messages.create({
     model: MODELS.optimizer,
-    max_tokens: 1500,
+    max_tokens: MAX_TOKENS.optimizer,
     system,
     messages: [{ role: 'user', content: userPrompt }],
   });
 
-  const text = msg.content[0].text;
+  const text = extractText(msg, 'Optimizer', MAX_TOKENS.optimizer);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('Optimizer: pas de JSON valide en sortie');
   return JSON.parse(jsonMatch[0]);
@@ -319,18 +389,18 @@ async function run() {
     ? `${rawSources}\n\n=== SOURCES COMPLÉMENTAIRES (Scout) ===\n${scoutFindings}`
     : rawSources;
 
-  // 3. Planner
+  // 3. Planificateur
   log(`Pilotage : ${MODELS.planner}`);
   const plan = await callPlanner(enrichedSources);
   log(`Plan : ${plan.topics.length} sujets retenus`);
   plan.topics.forEach((t, i) => log(`  ${i + 1}. ${t.title}`));
 
-  // 3. Writer
+  // 4. Rédacteur
   log(`Rédaction : ${MODELS.writer}`);
   const markdown = await callWriter(plan, dateLabel);
   log(`Article rédigé (${markdown.length} car)`);
 
-  // 4. Optimizer
+  // 5. Optimiseur
   log(`Optimisation : ${MODELS.optimizer}`);
   const meta = await callOptimizer(markdown, plan);
   log(`Meta : title=${meta.title?.slice(0, 60)}...`);
@@ -343,7 +413,7 @@ async function run() {
     return;
   }
 
-  // 5. Écriture
+  // 6. Écriture
   const filePath = await writeOutput(slug, today, markdown, meta);
   log(`✅ Écrit : ${filePath}`);
 }

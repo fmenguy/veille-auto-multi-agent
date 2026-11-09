@@ -1,7 +1,7 @@
 {
   "name": "veille-auto-multi-agent",
   "version": "1.0.0",
-  "description": "Pipeline de veille technologique automatisée propulsé par trois agents Claude (Opus, Sonnet, Haiku)",
+  "description": "Pipeline de veille technologique automatisée propulsé par quatre agents Claude (Opus, Sonnet, Haiku)",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -12,7 +12,7 @@
     "veille:dry": "node veille-auto.mjs --dry-run"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.69.0"
+    "@anthropic-ai/sdk": "^1.6.0"
   },
   "keywords": [
     "ai",

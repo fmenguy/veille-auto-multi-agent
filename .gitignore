@@ -1,8 +1,10 @@
 node_modules/
 .env
 .env.local
-output/
 *.log
 .DS_Store
 .idea/
 .vscode/
+
+# Modèle de configuration à publier (un .gitignore global peut ignorer .env.*)
+!.env.example

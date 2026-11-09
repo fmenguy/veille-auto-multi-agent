@@ -35,7 +35,7 @@ C'est la version générique, publiée en mai 2026, du pipeline qui écrit la [v
 Tout le pipeline tient dans `veille-auto.mjs` :
 
 1. **Scrape** : chaque URL de `veille-sources.json` est récupérée avec le `fetch` de Node, débarrassée de ses balises HTML et coupée à 8 000 caractères. Une source en erreur est ignorée ; si aucune ne répond, le run s'arrête.
-2. **Scout** : il reçoit les 6 000 premiers caractères du texte scrapé et utilise l'outil de recherche web d'Anthropic (`web_search_20250305`, 5 recherches au plus) pour trouver 3 à 5 informations des 7 derniers jours absentes des sources. S'il échoue, le pipeline continue sans lui.
+2. **Scout** : il reçoit les 6 000 premiers caractères du texte scrapé et utilise l'outil de recherche web d'Anthropic (`web_search_20260209`, 5 recherches au plus) pour trouver 3 à 5 informations des 7 derniers jours absentes des sources. Si la recherche côté serveur se met en pause (`pause_turn`), le script la relance, trois fois au plus. S'il échoue, le pipeline continue sans lui.
 3. **Planificateur** : il lit le texte scrapé et les trouvailles du Scout, puis retient 4 à 6 sujets (titre, résumé, sources, catégorie).
 4. **Rédacteur** : il écrit l'article en français à partir du plan seul. Titre « Veille tech <date> : ... », une section par sujet, au moins deux ou trois éléments visuels (tableau, citation, schéma ASCII, liste de définitions, encadré d'avertissement) et une section finale « Ce qu'il faut retenir ».
 5. **Optimiseur** : il produit en JSON le titre SEO, la méta-description, 4 à 5 points clés et 2 à 4 catégories, repris dans l'en-tête YAML du fichier.
@@ -44,10 +44,12 @@ Chaque rôle a son modèle : le plus cher (Opus) ne sert qu'au tri éditorial, H
 
 | Agent | Variable | Modèle par défaut | `max_tokens` |
 | :-- | :-- | :-- | :-- |
-| Scout | `VEILLE_MODEL_SCOUT` | `claude-sonnet-4-6` | 4 000 |
-| Planificateur | `VEILLE_MODEL_PLANNER` | `claude-opus-4-6` | 4 000 |
-| Rédacteur | `VEILLE_MODEL_WRITER` | `claude-sonnet-4-6` | 8 000 |
-| Optimiseur | `VEILLE_MODEL_OPTIMIZER` | `claude-haiku-4-5-20251001` | 1 500 |
+| Scout | `VEILLE_MODEL_SCOUT` | `claude-sonnet-5-5` | 16 000 |
+| Planificateur | `VEILLE_MODEL_PLANNER` | `claude-opus-5-5` | 16 000 |
+| Rédacteur | `VEILLE_MODEL_WRITER` | `claude-sonnet-5-5` | 16 000 |
+| Optimiseur | `VEILLE_MODEL_OPTIMIZER` | `claude-haiku-5-5` | 8 000 |
+
+Ces modèles réfléchissent toujours avant de répondre (réflexion adaptative, active par défaut), et cette réflexion consomme des tokens de sortie : d'où des plafonds `max_tokens` larges. Le planificateur demande un effort `high` (`output_config.effort`), au lieu du `medium` par défaut d'Opus 5.5 ; les autres agents gardent l'effort par défaut de leur modèle. Les plafonds sont réglés dans la constante `MAX_TOKENS` de `veille-auto.mjs`. Au-delà d'environ 16 000, le SDK exige le streaming, que le script n'utilise pas.
 
 ## Prérequis
 
@@ -92,9 +94,11 @@ Le script ne lit que `name` et `url`. Les champs `weight`, `topics` et `note`, c
 | `VEILLE_MODEL_SCOUT`, `VEILLE_MODEL_PLANNER`, `VEILLE_MODEL_WRITER`, `VEILLE_MODEL_OPTIMIZER` | Modèle de chaque agent (valeurs par défaut dans le tableau ci-dessus). |
 | `VEILLE_OUTPUT_DIR` | Dossier de sortie, `./output` par défaut. |
 
-Le script ne charge pas de fichier `.env` tout seul. Copier `.env.example` en `.env` (ignoré par git), puis lancer avec l'option `--env-file` de Node, ou exporter les variables dans le shell. `.env.example` ne mentionne pas `VEILLE_MODEL_SCOUT`, que le script lit pourtant.
+Le script ne charge pas de fichier `.env` tout seul. Copier `.env.example` en `.env` (ignoré par git), puis lancer avec l'option `--env-file` de Node, ou exporter les variables dans le shell.
 
-Changer de modèle : le planificateur, le rédacteur et l'optimiseur lisent le premier bloc de la réponse (`msg.content[0].text`). Un modèle qui renvoie d'abord un bloc de réflexion casse cette lecture. Tester en `--dry-run` avant de changer.
+Lecture des réponses : le script assemble le texte de tous les blocs `text` de la réponse et ignore les blocs de réflexion ou de recherche qui les précèdent. Il vérifie aussi la raison d'arrêt : une réponse tronquée (`max_tokens`), un refus du modèle (`refusal`) ou une fenêtre de contexte dépassée arrête le run avec un message explicite, au lieu de lire un JSON incomplet.
+
+Changer de modèle : chaque variable reste surchargeable, mais deux paramètres supposent un modèle récent. L'outil `web_search_20260209` du Scout demande Opus 4.6, Sonnet 4.6 ou plus récent (pas Haiku), et l'effort demandé par le planificateur est refusé par certains modèles plus anciens (Sonnet 4.5, Haiku 4.5). Tester en `--dry-run` avant de changer.
 
 ## Utilisation
 
@@ -129,9 +133,8 @@ generated_by: veille-auto-multi-agent
 Le workflow `.github/workflows/veille-auto.yml` (« Veille tech automatisée ») n'est livré qu'en lancement manuel, ce dépôt servant de modèle.
 
 1. Ajouter le secret `ANTHROPIC_API_KEY` : **Settings > Secrets and variables > Actions > New repository secret**.
-2. Retirer la ligne `output/` du `.gitignore`. Le workflow commite le fichier produit, et `git add` refuse un chemin ignoré : en l'état, l'étape de commit échoue.
-3. Lancer le workflow depuis **Actions > Veille tech automatisée > Run workflow**. L'option `dry_run` exécute le pipeline sans rien commiter.
-4. Pour un lancement automatique, décommenter le bloc `schedule` (le cron fourni tourne le vendredi à 7 h UTC) :
+2. Lancer le workflow depuis **Actions > Veille tech automatisée > Run workflow**. L'option `dry_run` exécute le pipeline sans rien commiter.
+3. Pour un lancement automatique, décommenter le bloc `schedule` (le cron fourni tourne le vendredi à 7 h UTC) :
 
    ```yaml
    on:
@@ -141,7 +144,7 @@ Le workflow `.github/workflows/veille-auto.yml` (« Veille tech automatisée »)
        ...
    ```
 
-Le job installe Node 22, lance le script, puis commite `output/veille-AAAA-MM-JJ.md` sous l'identité `veille-bot` et pousse sur la branche courante. Si la branche distante a bougé entre-temps, il rebase et retente, trois fois au plus. Le workflow déclare lui-même `permissions: contents: write` ; aucun autre réglage n'est normalement nécessaire, sauf si l'organisation restreint les droits du `GITHUB_TOKEN`. Durée maximale du job : 10 minutes.
+Le job installe Node 22, lance le script, puis commite `output/veille-AAAA-MM-JJ.md` sous l'identité `veille-bot` et pousse sur la branche courante. Si la branche distante a bougé entre-temps, il rebase et retente, trois fois au plus. Le workflow déclare lui-même `permissions: contents: write` ; aucun autre réglage n'est normalement nécessaire, sauf si l'organisation restreint les droits du `GITHUB_TOKEN`. Le dossier `output/` n'est pas ignoré par git, justement pour que le workflow puisse commiter ce fichier. Durée maximale du job : 20 minutes.
 
 ## Adapter à son site
 
@@ -156,7 +159,7 @@ La ligne éditoriale, la langue et le ton sont dans les prompts système des fon
 
 ## Coûts
 
-Estimation publiée en mai 2026 avec les modèles par défaut : environ **0,25 $ par article**, soit à peu près **13 € par an** au rythme d'un article par semaine. Chaque recherche web du Scout est facturée en plus des tokens (environ 0,01 $, 5 recherches au plus par run). Le coût réel dépend du volume de texte scrapé, des résultats de recherche et des tarifs en vigueur. Les minutes GitHub Actions d'un run hebdomadaire de ce type restent en général dans le quota gratuit.
+Estimation publiée en mai 2026 avec les modèles par défaut de l'époque (Opus 4.6, Sonnet 4.6, Haiku 4.5) : environ **0,25 $ par article**, soit à peu près **13 € par an** au rythme d'un article par semaine. Les modèles actuels sont moins chers au token, mais leur réflexion ajoute des tokens de sortie ; le coût n'a pas été remesuré avec eux. Chaque recherche web du Scout est facturée en plus des tokens (environ 0,01 $, 5 recherches au plus par run). Le coût réel dépend du volume de texte scrapé, des résultats de recherche et des tarifs en vigueur. Les minutes GitHub Actions d'un run hebdomadaire de ce type restent en général dans le quota gratuit.
 
 ## Limites
 
@@ -164,7 +167,7 @@ Estimation publiée en mai 2026 avec les modèles par défaut : environ **0,25 $
 - **Scraping basique** : `fetch` et expressions régulières. Une page rendue en JavaScript côté client revient vide ou presque, et certains sites refusent les robots (la liste par défaut signale qu'OpenAI répond parfois 403).
 - **Liens approximatifs** : les liens des pages sont perdus au scrape. Un sujet tiré d'une source scrapée cite souvent la page de rubrique de cette source ; seuls les sujets trouvés par le Scout ont une URL précise.
 - **Pas de mémoire d'un run à l'autre** : un sujet peut revenir d'une semaine sur l'autre.
-- **Sortie JSON fragile** : si le planificateur ou l'optimiseur ne renvoie pas de JSON lisible, le run échoue.
+- **Sortie JSON fragile** : si le planificateur ou l'optimiseur ne renvoie pas de JSON lisible, le run échoue. Une réponse tronquée ou refusée l'arrête aussi, avec un message qui en donne la raison.
 - **Pas de relecture humaine** dans la chaîne. Pour en ajouter une, insérer une étape de validation avant le commit (une pull request plutôt qu'un push direct, par exemple).
 
 ## Structure du dépôt
@@ -174,6 +177,7 @@ Estimation publiée en mai 2026 avec les modèles par défaut : environ **0,25 $
 ├── README.md
 ├── LICENSE                         licence MIT
 ├── package.json                    dépendance @anthropic-ai/sdk et scripts npm
+├── package-lock.json               versions exactes des dépendances
 ├── veille-auto.mjs                 le pipeline complet
 ├── veille-sources.json             sources scrapées
 ├── .env.example                    modèle de configuration locale
@@ -230,7 +234,7 @@ This is the generic version, published in May 2026, of the pipeline that writes 
 The whole pipeline lives in `veille-auto.mjs`:
 
 1. **Scrape**: each URL in `veille-sources.json` is fetched with Node's `fetch`, stripped of HTML tags and cut to 8,000 characters. A failing source is skipped; if none responds, the run stops.
-2. **Scout**: gets the first 6,000 characters of the scraped text and uses Anthropic's web search tool (`web_search_20250305`, at most 5 searches) to find 3 to 5 items from the last 7 days that the sources don't cover. If it fails, the pipeline carries on without it.
+2. **Scout**: gets the first 6,000 characters of the scraped text and uses Anthropic's web search tool (`web_search_20260209`, at most 5 searches) to find 3 to 5 items from the last 7 days that the sources don't cover. If the server-side search pauses (`pause_turn`), the script resumes it, up to three times. If it fails, the pipeline carries on without it.
 3. **Planner**: reads the scraped text plus the Scout's findings and keeps 4 to 6 topics (title, summary, sources, category).
 4. **Writer**: writes the article in French from the plan alone. Title "Veille tech <date> : ...", one section per topic, at least two or three visual elements (table, quote, ASCII diagram, definition list, warning box) and a closing "Ce qu'il faut retenir" (key takeaways) section.
 5. **Optimizer**: returns, as JSON, the SEO title, meta description, 4 to 5 highlights and 2 to 4 categories, which go into the file's YAML header.
@@ -239,10 +243,12 @@ Each role gets its own model: the most expensive one (Opus) only handles editori
 
 | Agent | Variable | Default model | `max_tokens` |
 | :-- | :-- | :-- | :-- |
-| Scout | `VEILLE_MODEL_SCOUT` | `claude-sonnet-4-6` | 4,000 |
-| Planner | `VEILLE_MODEL_PLANNER` | `claude-opus-4-6` | 4,000 |
-| Writer | `VEILLE_MODEL_WRITER` | `claude-sonnet-4-6` | 8,000 |
-| Optimizer | `VEILLE_MODEL_OPTIMIZER` | `claude-haiku-4-5-20251001` | 1,500 |
+| Scout | `VEILLE_MODEL_SCOUT` | `claude-sonnet-5-5` | 16,000 |
+| Planner | `VEILLE_MODEL_PLANNER` | `claude-opus-5-5` | 16,000 |
+| Writer | `VEILLE_MODEL_WRITER` | `claude-sonnet-5-5` | 16,000 |
+| Optimizer | `VEILLE_MODEL_OPTIMIZER` | `claude-haiku-5-5` | 8,000 |
+
+These models always think before answering (adaptive thinking, on by default), and thinking uses output tokens: hence the generous `max_tokens` limits. The planner asks for `high` effort (`output_config.effort`) instead of Opus 5.5's default `medium`; the other agents keep their model's default effort. The limits live in the `MAX_TOKENS` constant in `veille-auto.mjs`. Above roughly 16,000, the SDK requires streaming, which the script does not use.
 
 ## Requirements
 
@@ -287,9 +293,11 @@ The script only reads `name` and `url`. The `weight`, `topics` and `note` fields
 | `VEILLE_MODEL_SCOUT`, `VEILLE_MODEL_PLANNER`, `VEILLE_MODEL_WRITER`, `VEILLE_MODEL_OPTIMIZER` | Model for each agent (defaults in the table above). |
 | `VEILLE_OUTPUT_DIR` | Output folder, `./output` by default. |
 
-The script does not load a `.env` file by itself. Copy `.env.example` to `.env` (ignored by git) and run with Node's `--env-file` option, or export the variables in your shell. `.env.example` does not mention `VEILLE_MODEL_SCOUT`, although the script reads it.
+The script does not load a `.env` file by itself. Copy `.env.example` to `.env` (ignored by git) and run with Node's `--env-file` option, or export the variables in your shell.
 
-Switching models: the planner, writer and optimizer read the first block of the response (`msg.content[0].text`). A model that returns a thinking block first breaks this. Try a `--dry-run` before switching.
+Reading responses: the script joins the text of every `text` block in the response and skips the thinking or search blocks that come before them. It also checks the stop reason: a truncated response (`max_tokens`), a model refusal (`refusal`) or an exceeded context window stops the run with an explicit message, instead of parsing incomplete JSON.
+
+Switching models: every variable can still be overridden, but two parameters assume a recent model. The Scout's `web_search_20260209` tool needs Opus 4.6, Sonnet 4.6 or later (not Haiku), and the effort the planner asks for is rejected by some older models (Sonnet 4.5, Haiku 4.5). Try a `--dry-run` before switching.
 
 ## Usage
 
@@ -324,9 +332,8 @@ generated_by: veille-auto-multi-agent
 The `.github/workflows/veille-auto.yml` workflow ("Veille tech automatisée") ships as manual-only, since this repository is meant as a template.
 
 1. Add the `ANTHROPIC_API_KEY` secret: **Settings > Secrets and variables > Actions > New repository secret**.
-2. Remove the `output/` line from `.gitignore`. The workflow commits the generated file, and `git add` refuses an ignored path: as shipped, the commit step fails.
-3. Start the workflow from **Actions > Veille tech automatisée > Run workflow**. The `dry_run` option runs the pipeline without committing anything.
-4. To run it on a schedule, uncomment the `schedule` block (the provided cron fires on Fridays at 07:00 UTC):
+2. Start the workflow from **Actions > Veille tech automatisée > Run workflow**. The `dry_run` option runs the pipeline without committing anything.
+3. To run it on a schedule, uncomment the `schedule` block (the provided cron fires on Fridays at 07:00 UTC):
 
    ```yaml
    on:
@@ -336,7 +343,7 @@ The `.github/workflows/veille-auto.yml` workflow ("Veille tech automatisée") sh
        ...
    ```
 
-The job sets up Node 22, runs the script, then commits `output/veille-YYYY-MM-DD.md` as `veille-bot` and pushes to the current branch. If the remote branch moved in the meantime, it rebases and retries, up to three times. The workflow itself declares `permissions: contents: write`; no other setting should be needed unless your organization restricts `GITHUB_TOKEN` permissions. Job timeout: 10 minutes.
+The job sets up Node 22, runs the script, then commits `output/veille-YYYY-MM-DD.md` as `veille-bot` and pushes to the current branch. If the remote branch moved in the meantime, it rebases and retries, up to three times. The workflow itself declares `permissions: contents: write`; no other setting should be needed unless your organization restricts `GITHUB_TOKEN` permissions. The `output/` folder is not ignored by git, precisely so that the workflow can commit that file. Job timeout: 20 minutes.
 
 ## Plugging it into your site
 
@@ -351,7 +358,7 @@ Editorial line, language and tone are set in the system prompts of `callScout`, 
 
 ## Cost
 
-Estimate published in May 2026 with the default models: about **$0.25 per article**, roughly **€13 a year** at one article a week. Each Scout web search is billed on top of tokens (about $0.01, at most 5 per run). Actual cost depends on how much text is scraped, on the search results and on current pricing. A weekly run like this one usually stays within the free GitHub Actions minutes.
+Estimate published in May 2026 with the default models of the time (Opus 4.6, Sonnet 4.6, Haiku 4.5): about **$0.25 per article**, roughly **€13 a year** at one article a week. The current models cost less per token, but their thinking adds output tokens; the cost has not been measured again with them. Each Scout web search is billed on top of tokens (about $0.01, at most 5 per run). Actual cost depends on how much text is scraped, on the search results and on current pricing. A weekly run like this one usually stays within the free GitHub Actions minutes.
 
 ## Limitations
 
@@ -359,7 +366,7 @@ Estimate published in May 2026 with the default models: about **$0.25 per articl
 - **Basic scraping**: `fetch` plus regular expressions. A page rendered client-side in JavaScript comes back empty or nearly so, and some sites block bots (the default list notes that OpenAI sometimes returns 403).
 - **Approximate links**: links are lost during scraping. A topic taken from a scraped source often cites that source's section page; only topics found by the Scout carry a precise URL.
 - **No memory between runs**: the same topic can come back the following week.
-- **Brittle JSON output**: if the planner or the optimizer does not return readable JSON, the run fails.
+- **Brittle JSON output**: if the planner or the optimizer does not return readable JSON, the run fails. A truncated or refused response also stops it, with a message giving the reason.
 - **No human review** in the chain. To add one, put a validation step before the commit (open a pull request instead of pushing directly, for instance).
 
 ## Repository layout
@@ -369,6 +376,7 @@ Estimate published in May 2026 with the default models: about **$0.25 per articl
 ├── README.md
 ├── LICENSE                         MIT license
 ├── package.json                    @anthropic-ai/sdk dependency and npm scripts
+├── package-lock.json               exact dependency versions
 ├── veille-auto.mjs                 the whole pipeline
 ├── veille-sources.json             scraped sources
 ├── .env.example                    local configuration template
